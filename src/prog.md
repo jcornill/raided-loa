@@ -56,6 +56,7 @@ const supportClasses = [
   "Desperate Salvation",
   "Blessed Aura",
   "Princess",
+  "Liberator",
 ];
 
 function formatPercent(x) {
