@@ -443,6 +443,8 @@ async function get_encounter_info(encID) {
       critPercent: skillStats["crits"] / skillStats["hits"],
       frontPercent: skillStats["frontAttacks"] / skillStats["hits"],
       backPercent: skillStats["backAttacks"] / skillStats["hits"],
+      counter: skillStats["counters"],
+      stagger: damageInfo["stagger"],
       damageTaken: damageInfo["damageTaken"],
       deaths: countedDeaths,
       deathTime: finalDeathTime,
@@ -934,6 +936,18 @@ if (!!selectedEncounter) {
           playerInfo
             .map((player) => player.damageTaken)
             .reduce((a, b) => a + b, 0) / playerInfo.length,
+        "Counter":
+          playerInfo
+            .map((player) => player.counter)
+            .reduce((a, b) => a + b, 0),
+        "Stagger (Avg)":
+          Math.round(playerInfo
+            .map((player) => player.stagger)
+            .reduce((a, b) => a + b, 0) / playerInfo.length),
+        "Stagger (Total)":
+          playerInfo
+            .map((player) => player.stagger)
+            .reduce((a, b) => a + b, 0),
         "Deaths / Pull":
           playerInfo.map((player) => player.deaths).reduce((a, b) => a + b, 0) /
           playerInfo.length,
@@ -1038,6 +1052,18 @@ if (!!selectedEncounter) {
       "Dmg Taken (Avg)":
         player.map((player) => player.damageTaken).reduce((a, b) => a + b, 0) /
         player.length,
+      "Counter":
+        player
+          .map((player) => player.counter)
+          .reduce((a, b) => a + b, 0),
+      "Stagger (Avg)":
+        Math.round(player
+          .map((player) => player.stagger)
+          .reduce((a, b) => a + b, 0) / player.length),
+      "Stagger (Total)":
+        player
+          .map((player) => player.stagger)
+          .reduce((a, b) => a + b, 0),
       "Deaths / Pull": playerDeaths / player.length,
       "Deaths (Total)": playerDeaths,
       Clears: player.filter((player) => player.cleared == 1).length, 
