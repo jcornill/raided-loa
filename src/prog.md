@@ -415,7 +415,7 @@ async function get_encounter_info(encID) {
     fightStart: encounterPreview[0]["fight_start"],
     duration: fightDuration,
     bossHPInfo: bossesHPInfo,
-    playerInfo: playerInfo,
+    playerInfo: playerInfo
   };
 }
 
@@ -594,6 +594,8 @@ const subBossFormat = {
   "DPS Taken (Total)": formatThousands,
 };
 const subBossWidths = {};
+let bool = false;
+let test = {};
 let encounterTable, tableSelect;
 if (!!selectedEncounter) {
   for (let i = 0; i < selectedBossNames.length; i++) {
@@ -602,6 +604,20 @@ if (!!selectedEncounter) {
   }
 
   encounterTable = encounterInfos.map((enc) => {
+      let earliestPlayerDeath = enc.playerInfo.filter(player => player.deathTime > 5).reduce((earliest, player) => {
+          return player.deathTime < earliest.deathTime ? player : earliest;
+      }, { deathTime: Infinity });
+      
+      if (!bool) {
+          bool = true
+          enc.playerInfo.forEach(player => {
+              if (player.name) {
+                  test[player.name] = 0;
+              }
+          });
+      }
+      test[earliestPlayerDeath.name]++;
+      let deadTime = (earliestPlayerDeath.deathTime - enc.fightStart) / 1000;
     const row = {
       ID: enc.id,
       "Bars Complete": enc.barsComplete,
@@ -617,6 +633,7 @@ if (!!selectedEncounter) {
         .map((player) => player.deaths)
         .reduce((a, b) => a + b, 0),
       Cleared: enc.cleared == 1 ? "Yes" : "No",
+        "First Dead": earliestPlayerDeath ? earliestPlayerDeath.name + " " + formatDuration(deadTime) : "",
     };
 
     for (let i = 0; i < enc.bossHPInfo.length; i++) {
@@ -738,6 +755,7 @@ if (!!selectedEncounter) {
           .map((player) => player.deaths)
           .reduce((a, b) => a + b, 0),
         Clears: playerInfo.filter((player) => player.cleared == 1).length,
+          "First Death": test[name],
       };
 
       return row;
@@ -831,7 +849,8 @@ if (!!selectedEncounter) {
         player.length,
       "Deaths / Pull": playerDeaths / player.length,
       "Deaths (Total)": playerDeaths,
-      Clears: player.filter((player) => player.cleared == 1).length,
+      Clears: player.filter((player) => player.cleared == 1).length, 
+        "First Death": test[name],
     };
 
     return row;
