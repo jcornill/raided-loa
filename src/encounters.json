@@ -169,10 +169,7 @@
     "difficulties": ["Normal", "Hard"]
   },
   "Mordum G1": {
-    "names": [
-      "Thaemine, Master of Darkness", 
-      "Infernas"
-    ],
+    "names": ["Thaemine, Master of Darkness", "Infernas"],
     "difficulties": ["Normal", "Hard"]
   },
   "Mordum G2": {
@@ -180,11 +177,28 @@
     "difficulties": ["Normal", "Hard"]
   },
   "Mordum G3": {
+    "names": ["Mordum, the Abyssal Punisher", "Flash of Punishment"],
+    "difficulties": ["Normal", "Hard"]
+  },
+  "Armoche G1": {
     "names": [
-      "Mordum, the Abyssal Punisher", 
-      "Flash of Punishment"
+      "Act 4: Covetous Master Echidna",
+      "Brelshaza, Ember in the Ashes",
+      "Covetous Shadow"
     ],
     "difficulties": ["Normal", "Hard"]
+  },
+  "Armoche G2": {
+    "names": ["Armoche, Sentinel of the Abyss"],
+    "difficulties": ["Normal", "Hard"]
+  },
+  "Kazeros G1": {
+    "names": ["Abyss Lord Kazeros", "Abyssal Afterimage"],
+    "difficulties": ["Normal", "Hard", "The First"]
+  },
+  "Kazeros G2": {
+    "names": ["Archdemon Kazeros", "Death Incarnate Kazeros"],
+    "difficulties": ["Normal", "Hard", "The First"]
   },
   "Deskaluda": {
     "names": ["Deskaluda"],
@@ -228,6 +242,10 @@
   },
   "Drextalas": {
     "names": ["Drextalas"],
+    "difficulties": [""]
+  },
+  "Krathios": {
+    "names": ["Krathios"],
     "difficulties": [""]
   }
 }

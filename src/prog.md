@@ -56,6 +56,7 @@ const supportClasses = [
   "Desperate Salvation",
   "Blessed Aura",
   "Princess",
+  "Liberator",
 ];
 
 function formatPercent(x) {
@@ -268,7 +269,33 @@ async function get_encounter_info(encID) {
 
   const bossesHPInfo = [];
   for (let i = 0; i < bosses.length; i++) {
-    const hpBars = hpBarMap[bosses[i]];
+    // Try to look up boss HP bars from the map. If an exact key isn't found
+    // attempt some fallbacks: strip prefixes like "Act X: ", then try a
+    // case-insensitive substring match against known keys. This fixes cases
+    // where encounter names differ slightly from the HP map (e.g. "Act 4:").
+    let bossName = bosses[i];
+    let hpBars = hpBarMap[bossName];
+    if (!hpBars) {
+      // Strip common prefixes (e.g., "Act 4: ")
+      const stripped = bossName.replace(/^Act\s*\d+:\s*/i, "");
+      if (stripped !== bossName && hpBarMap[stripped]) {
+        bossName = stripped;
+        hpBars = hpBarMap[bossName];
+      }
+    }
+    if (!hpBars) {
+      // Try a substring / fuzzy match against existing keys (case-insensitive)
+      const matchKey = Object.keys(hpBarMap).find(
+        (k) =>
+          k.toLowerCase().includes(bossName.toLowerCase()) ||
+          bossName.toLowerCase().includes(k.toLowerCase())
+      );
+      if (matchKey) {
+        bossName = matchKey;
+        hpBars = hpBarMap[matchKey];
+      }
+    }
+
     const lastInfo = hpLog[bosses[i]].slice(-1)[0];
 
     let bossBars;
@@ -301,6 +328,33 @@ async function get_encounter_info(encID) {
   }
 
   const playerInfo = [];
+  // Aggregate buff contributions from supporters: map supporter character_id -> total buffed damage they caused
+  const buffContrib = {};
+
+  // Build skill -> owner mapping so we can attribute buff entries (which are keyed by skill/buff id)
+  const skillOwnerMap = {};
+  for (let i = 0; i < playerEntities.length; i++) {
+    const ent = playerEntities[i];
+    let skillsRaw = ent["skills"];
+    let skillsParsed = {};
+    if (skillsRaw) {
+      try {
+        // skills are stored compressed like damage_stats
+        let inflated = pako.inflate(skillsRaw);
+        skillsParsed = JSON.parse(new TextDecoder().decode(inflated));
+      } catch (e) {
+        try {
+          skillsParsed = JSON.parse(skillsRaw);
+        } catch (e2) {
+          skillsParsed = {};
+        }
+      }
+    }
+    for (const sid of Object.keys(skillsParsed)) {
+      if (!skillOwnerMap[sid]) skillOwnerMap[sid] = [];
+      skillOwnerMap[sid].push(String(ent["character_id"]));
+    }
+  }
   for (let i = 0; i < playerEntities.length; i++) {
     const entity = playerEntities[i];
     const skillStats = JSON.parse(entity["skill_stats"]);
@@ -313,7 +367,47 @@ async function get_encounter_info(encID) {
       damageInfo = JSON.parse(damageInfo);
     }
 
+    // Collect buff contributions: damageInfo.buffedBy is a map keyed by skill/buff id -> damage applied to this entity
+    if (damageInfo && damageInfo["buffedBy"]) {
+      const by = damageInfo["buffedBy"];
+      for (const k in by) {
+        const owners = skillOwnerMap[k] || [];
+        if (owners.length === 0) {
+          // unknown owner: skip attribution (could optionally aggregate under 'unknown')
+          continue;
+        }
+        // attribute damage to all owners evenly if multiple owners have the same skill id
+        const share = by[k] / owners.length;
+        for (const ownerId of owners) {
+          if (!buffContrib.hasOwnProperty(ownerId)) buffContrib[ownerId] = 0;
+          buffContrib[ownerId] += share;
+        }
+      }
+    }
+
     const realDeath = encounterEnd - damageInfo["deathTime"] > 1000;
+
+    // Determine death counting with revive awareness.
+    // damageInfo.deaths counts death events (including temporary deaths).
+    // The `is_dead` column on the entity indicates whether the player ended
+    // the encounter dead (no revive after their last death). We want to count
+    // all deaths that were followed by a revive, and also count final deaths
+    // that were not followed by a revive so long as they didn't occur within
+    // a short window at the end of the encounter (treated as post-fight).
+    let finalDeathTime = damageInfo["deathTime"] || 0;
+    const endedDead = entity["is_dead"] == 1;
+    let countedDeaths = damageInfo["deaths"] || 0;
+    // If the player ended dead, check whether the last death happened so close
+    // to the encounter end that it should be ignored (same logic as previous
+    // - subtract the terminal death if it occurred within the threshold).
+    if (countedDeaths > 0 && endedDead && finalDeathTime) {
+      const lateThresholdMs = 1000; // same threshold as before
+      if (encounterEnd - finalDeathTime <= lateThresholdMs) {
+        countedDeaths = Math.max(0, countedDeaths - 1);
+        // Treat last death time as 0 since we discounted it as post-fight.
+        finalDeathTime = 0;
+      }
+    }
 
     const party = partyNumbers
       ? Number(
@@ -325,12 +419,22 @@ async function get_encounter_info(encID) {
 
     let damageWithoutHA =
       damageInfo["damageDealt"] - damageInfo["hyperAwakeningDamage"];
+    // keep damageInfo parsed, uDps, and support uptimes; do not compute
+    // support-side buffed DPS (bDPS) here — revert to not storing bDPS.
+
     playerInfo.push({
       name: entity["name"],
+      characterId: entity["character_id"],
       class: entity["spec"] ? entity["spec"] : entity["class"],
       isSupport: supportClasses.includes(entity["class"]),
       party: party,
       dps: damageInfo["dps"],
+      // Prefer the explicit unbuffed column if present, otherwise try damage_stats
+      uDps:
+        entity.hasOwnProperty("unbuffed_dps") && entity["unbuffed_dps"]
+          ? entity["unbuffed_dps"]
+          : damageInfo["unbuffed_dps"] || damageInfo["unbuffedDamage"] || 0,
+      // no bDPS here — keep only unbuffed DPS and other metrics
       supAPUptime: damageInfo["buffedBySupport"] / damageWithoutHA,
       supBrandUptime: damageInfo["debuffedBySupport"] / damageWithoutHA,
       supIdentityUptime: damageInfo["buffedByIdentity"] / damageWithoutHA,
@@ -340,12 +444,71 @@ async function get_encounter_info(encID) {
       frontPercent: skillStats["frontAttacks"] / skillStats["hits"],
       backPercent: skillStats["backAttacks"] / skillStats["hits"],
       damageTaken: damageInfo["damageTaken"],
-      deaths: realDeath ? damageInfo["deaths"] : damageInfo["deaths"] - 1,
-      deathTime: realDeath ? damageInfo["deathTime"] : 0,
+      deaths: countedDeaths,
+      deathTime: finalDeathTime,
       cleared: encounterPreview[0]["cleared"],
       spec: entity["spec"] ? entity["spec"] : "",
       gearscore: entity["gear_score"],
       arkPassive: entity["ark_passive_active"] == 1,
+      // compute per-support skill-level buff totals if possible (sum of skill.buffedBySupport)
+      skillBuffedTotal: (() => {
+        try {
+          const skillsRaw = entity["skills"];
+          if (!skillsRaw) return 0;
+          let skillsParsed;
+          try {
+            const inflated = pako.inflate(skillsRaw);
+            skillsParsed = JSON.parse(new TextDecoder().decode(inflated));
+          } catch (e) {
+            skillsParsed =
+              typeof skillsRaw === "string" ? JSON.parse(skillsRaw) : {};
+          }
+          let sum = 0;
+          for (const sid of Object.keys(skillsParsed)) {
+            const sdat = skillsParsed[sid];
+            if (sdat && sdat.hasOwnProperty("buffedBySupport")) {
+              const v = sdat["buffedBySupport"];
+              if (typeof v === "number") sum += v;
+            }
+          }
+          return sum;
+        } catch (e) {
+          return 0;
+        }
+      })(),
+      // sum per-skill rdpsContributed values (if present). rdpsContributed may be an object mapping
+      // windows/keys to numeric values – sum numeric entries.
+      skillRdpsContributed: (() => {
+        try {
+          const skillsRaw = entity["skills"];
+          if (!skillsRaw) return 0;
+          let skillsParsed;
+          try {
+            const inflated = pako.inflate(skillsRaw);
+            skillsParsed = JSON.parse(new TextDecoder().decode(inflated));
+          } catch (e) {
+            skillsParsed =
+              typeof skillsRaw === "string" ? JSON.parse(skillsRaw) : {};
+          }
+          let sum = 0;
+          for (const sid of Object.keys(skillsParsed)) {
+            const sdat = skillsParsed[sid];
+            if (!sdat) continue;
+            const r = sdat["rdpsContributed"];
+            if (typeof r === "number") {
+              sum += r;
+            } else if (r && typeof r === "object") {
+              for (const kk of Object.keys(r)) {
+                const vv = r[kk];
+                if (typeof vv === "number") sum += vv;
+              }
+            }
+          }
+          return sum;
+        } catch (e) {
+          return 0;
+        }
+      })(),
     });
   }
 
@@ -359,6 +522,19 @@ async function get_encounter_info(encID) {
     .filter((player) => !player.isSupport)
     .map((player) => player.dps)
     .reduce((a, b) => a + b, 0);
+
+  const avgTeamUDps =
+    nDPS > 0
+      ? playerInfo
+          .filter((player) => !player.isSupport)
+          .map((player) => player.uDps || 0)
+          .reduce((a, b) => a + b, 0)
+      : 0;
+
+  // Compute bDPS: prefer the generator's pseudo-rDPS contributions (rdpsContributed)
+  // when present — this matches how the meter computes "totalDamageBuffed".
+  // Fallback order: rdpsContributed (types 1/3/5) -> per-skill buffedBySupport ->
+  // target-side attribution via buffContrib (skill id -> owner mapping).
 
   const avgTeamDamageTaken = playerInfo
     .map((player) => player.damageTaken)
@@ -395,9 +571,33 @@ async function get_encounter_info(encID) {
           .reduce((a, b) => a + b, 0) / nDPS
       : 0;
 
+  // Attach support buff contribution totals and DPS to support playerInfo entries
+  for (let i = 0; i < playerInfo.length; i++) {
+    const p = playerInfo[i];
+    const cid = String(p.characterId || p.character_id || p.id || "");
+    // Prefer explicit per-support skill-summed buff totals if available (more direct)
+    const skillTotal = p.skillBuffedTotal || 0;
+    const skillRdps = p.skillRdpsContributed || 0;
+    const contributedTotal = buffContrib[cid] || 0;
+    // Prefer rdpsContributed (pseudo-rDPS) if available — this is how the meter
+    // tallies "totalDamageBuffed" (summing rdps_contributed types 1,3,5). If not
+    // available, fall back to per-skill buffedBySupport, then to attributed buffContrib.
+    const totalBuffed =
+      skillRdps > 0
+        ? skillRdps
+        : skillTotal > 0
+        ? skillTotal
+        : contributedTotal;
+    p.supportBuffedDamage = totalBuffed;
+    p.supportBuffedDps = fightDuration > 0 ? totalBuffed / fightDuration : 0;
+    // also expose raw rdpsContributed for inspection (same value used above when present)
+    p.supportRawRdps = skillRdps;
+  }
+
   return {
     id: encID,
     avgTeamDps: avgTeamDps,
+    avgTeamUDps: avgTeamUDps,
     barsComplete: bossesHPInfo
       .map((boss) => boss.barsComplete)
       .filter((bars) => !!bars)
@@ -590,6 +790,7 @@ function sparkbar(max) {
 const subBossFormat = {
   ID: String,
   "DPS (Total)": formatMillions,
+  "uDPS (Avg)": formatMillions,
   Duration: formatDuration,
   "DPS Taken (Total)": formatThousands,
 };
@@ -618,11 +819,13 @@ if (!!selectedEncounter) {
       }
       test[earliestPlayerDeath.name]++;
       let deadTime = (earliestPlayerDeath.deathTime - enc.fightStart) / 1000;
+    const nonSupCount = enc.playerInfo.filter((p) => !p.isSupport).length;
     const row = {
       ID: enc.id,
       "Bars Complete": enc.barsComplete,
       Duration: enc.duration,
       "DPS (Total)": enc.avgTeamDps,
+      "uDPS (Avg)": nonSupCount > 0 ? enc.avgTeamUDps / nonSupCount : 0,
       "DPS Taken (Total)": enc.avgTeamDPSTaken,
       "Sup. Perf.": `${Math.round(enc.avgAPUptime * 100)}/${Math.round(
         enc.avgBrandUptime * 100
@@ -701,29 +904,12 @@ if (!!selectedEncounter) {
         playerInfo.map((player) => player.dps).reduce((a, b) => a + b, 0) /
         playerInfo.length;
 
-      let percentile;
-      if (haveDB && playerInfo[playerInfo.length - 1].spec) {
-        // Calculate gear score
-        let gearScore =
-          playerInfo
-            .map((player) => player.gearscore)
-            .reduce((a, b) => a + b, 0) / playerInfo.length;
+      const playerUDPS =
+        playerInfo
+          .map((player) => player.uDps || 0)
+          .reduce((a, b) => a + b, 0) / playerInfo.length;
 
-        const minGearscore = gearScore - percentileWindow;
-        const maxGearscore = gearScore + percentileWindow;
-
-        // Get DPS from db
-        let dps = await logDB.query(
-          `SELECT dps FROM logs
-        WHERE spec = $$${playerInfo[playerInfo.length - 1].spec}$$ AND
-        gearscore BETWEEN ${minGearscore} AND ${maxGearscore} AND
-        arkPassiveActive = true`
-        );
-        dps = dps.toArray().map((d) => d.dps);
-        const nBelow = dps.filter((d) => d < playerDPS).length;
-        percentile =
-          Math.round((nBelow / dps.length) * 100) + `% (${dps.length})`;
-      }
+      // Percentile columns removed — global percentiles are deprecated/disabled.
 
       const row = {
         Name: name,
@@ -731,7 +917,7 @@ if (!!selectedEncounter) {
         Pulls: playerInfo.length,
         "Last Party": playerInfo[playerInfo.length - 1].party,
         "DPS (Avg)": playerDPS,
-        Percentile: percentile,
+        "uDPS (Avg)": playerUDPS,
         "Crit Rate":
           playerInfo
             .map((player) => player.critPercent)
@@ -834,6 +1020,8 @@ if (!!selectedEncounter) {
         )
         .reduce((a, b) => a + b, 0) / playerAllies.length;
 
+    // bDPS removed — no playerBDPS
+
     const row = {
       Name: name,
       Class: playerClass,
@@ -843,6 +1031,9 @@ if (!!selectedEncounter) {
       "Brand %": allyBrandUptime,
       "Identity %": allyIdentityUptime,
       "HT %": allyHTUptime,
+      "Buffed DPS (Avg)":
+        player.map((p) => p.supportBuffedDps || 0).reduce((a, b) => a + b, 0) /
+        player.length,
       "Dmg Shielded (Avg)": playerShielded,
       "Dmg Taken (Avg)":
         player.map((player) => player.damageTaken).reduce((a, b) => a + b, 0) /
@@ -863,6 +1054,7 @@ if (!!selectedEncounter) {
       reverse: true,
       format: {
         "DPS (Avg)": formatMillions,
+        "uDPS (Avg)": formatMillions,
         "Crit Rate": formatPercent,
         "FA Rate": formatPercent,
         "BA Rate": formatPercent,
@@ -883,6 +1075,7 @@ if (!!selectedEncounter) {
         "Identity %": formatPercent,
         "HT %": formatPercent,
         "Dmg Shielded (Avg)": formatThousands,
+        "Buffed DPS (Avg)": formatMillions,
         "Dmg Taken (Avg)": formatThousands,
         "Last Party": (x) => x + 1,
       },
